@@ -19,18 +19,16 @@ from wtpsplit.models import SubwordXLMForTokenClassification
 from wtpsplit.utils import Constants
 
 parser = argparse.ArgumentParser()
+
 parser.add_argument("--block_size", type=int, default=256)
 parser.add_argument("--num_layers", type=int, default=12)
 parser.add_argument("--lim_lookahead", type=bool, default=False)
-parser.add_argument("--upsample_non_whitespace", type=bool, default=False)
 parser.add_argument("--without_pretraining", type=bool, default=False)
-parser.add_argument("--corruption_in_pretraining", type=bool, default=False)
-parser.add_argument("--new_tokenizer", type=bool, default=False)
-parser.add_argument("--upsampling_in_pretraining", type=bool, default=False)
+parser.add_argument("--no_sm_corruption", type=bool, default=False)
+
 args = parser.parse_args()
 
-
-data_path = "data/all_data.pth"
+data_path = "../data/preprocessed_training_data/all_data_11_05-all.pth"
 all_data = torch.load(data_path)
 
 block_size = args.block_size
@@ -38,64 +36,116 @@ block_size = args.block_size
 train_sentences = defaultdict(lambda: defaultdict(list))
 test_sentences = defaultdict(lambda: defaultdict(list))
 
+punct_chars = set(Constants.PUNCTUATION_CHARS)
+
+
 for lang_code in tqdm(all_data, desc="Loading train/dev data"):
 
-    if (
+    if "-" in lang_code or "_" in lang_code:
+        pass
+    elif (
         "ud" in all_data[lang_code]["sentence"]
         and all_data[lang_code]["sentence"]["ud"]["meta"]["train_data"] is not None
     ):
-        print(f"Found UD data for {lang_code}")
 
         train_data = all_data[lang_code]["sentence"]["ud"]["meta"]["train_data"]
-        train_sentences[lang_code]["all"].extend(train_data)
+        if len(train_data) < 10000:
+            train_data = train_data * (10000 // len(train_data) + 1)
 
-        train_data = all_data[lang_code]["sentence"]["ud-corrupted"]["meta"]["train_data"]
-        train_sentences[lang_code]["all"].extend(train_data)
+        if len(train_data) < 5000:
+            train_data = train_data * (10000 // len(train_data) + 1)
+
+        train_sentences[lang_code]["uncorrupted"].extend(train_data)
+
+        if not args.no_sm_corruption:
+
+            train_data = all_data[lang_code]["sentence"]["ud-corrupted-asr"]["meta"]["train_data"]
+
+            if len(train_data) < 5000:
+                train_data = train_data * (10000 // len(train_data) + 1)
+
+            train_sentences[lang_code]["corrupted-asr"].extend(train_data)
+
+            train_data = all_data[lang_code]["sentence"]["ud-corrupted-social-media"]["meta"]["train_data"]
+
+            if len(train_data) < 5000:
+                train_data = train_data * (10000 // len(train_data) + 1)
+
+            train_sentences[lang_code]["corrupted-social-media"].extend(train_data)
 
     elif (
         "opus100" in all_data[lang_code]["sentence"]
         and all_data[lang_code]["sentence"]["opus100"]["meta"]["train_data"] is not None
     ):
 
-        print(f"Found Opus100 data for {lang_code}")
+        train_data = all_data[lang_code]["sentence"]["opus100"]["meta"]["train_data"]
+        assert len(train_data) == 10000
+        train_sentences[lang_code]["uncorrupted"].extend(train_data)
 
-        train_data = all_data[lang_code]["sentence"]["opus100"]["meta"]["train_data"][:10000]
-        train_sentences[lang_code]["all"].extend(train_data)
+        if not args.no_sm_corruption:
 
-        train_data = all_data[lang_code]["sentence"]["opus100-corrupted"]["meta"]["train_data"][:10000]
-        train_sentences[lang_code]["all"].extend(train_data)
+            train_data = all_data[lang_code]["sentence"]["opus100-corrupted-asr"]["meta"]["train_data"]
+            assert len(train_data) == 10000
+            train_sentences[lang_code]["corrupted-asr"].extend(train_data)
+
+            train_data = all_data[lang_code]["sentence"]["opus100-corrupted-social-media"]["meta"]["train_data"]
+            assert len(train_data) == 10000
+            train_sentences[lang_code]["corrupted-social-media"].extend(train_data)
     else:
-        print(f"No data found for {lang_code}")
+
+        train_data = all_data[lang_code]["sentence"]["nllb"]["meta"]["train_data"]
+        assert len(train_data) == 10000
+        train_sentences[lang_code]["uncorrupted"].extend(train_data)
+
+        if not args.no_sm_corruption:
+
+            train_data = all_data[lang_code]["sentence"]["nllb-corrupted-asr"]["meta"]["train_data"]
+            assert len(train_data) == 10000
+            train_sentences[lang_code]["corrupted-asr"].extend(train_data)
+
+            train_data = all_data[lang_code]["sentence"]["nllb-corrupted-social-media"]["meta"]["train_data"]
+            assert len(train_data) == 10000
+            train_sentences[lang_code]["corrupted-social-media"].extend(train_data)
 
     for dataset in all_data[lang_code]["sentence"]:
 
+        if any(dataset.startswith(x) for x in ["short-sequences", "legal"]):
+            continue
+
         test_data = all_data[lang_code]["sentence"][dataset]["data"]
-        test_sentences[dataset][lang_code].extend(test_data[:100])
+        test_sentences[lang_code][dataset].extend(test_data[:200])
 
 
 tokenizer_checkpoint = "xlm-roberta-base"
 
 if args.without_pretraining:
     model_checkpoint = "xlm-roberta-base"
-elif args.upsampling_in_pretraining:
-    model_checkpoint = "data/models/xlmr-3l-v3_look48_snW4"
+elif args.num_layers == 1:
+    if args.lim_lookahead:
+        raise NotImplementedError("Not implemented")
+    else:
+        model_checkpoint = "../data/models/xlmr-1l-v3_lc0.1_mix2"
 elif args.num_layers == 3:
     if args.lim_lookahead:
-        model_checkpoint = "data/models/xlmr-3l-v3_look48-NEW"
+        model_checkpoint = "../data/models/xlmr-3l-v3_look48_lc0.1-mix2"
     else:
-        model_checkpoint = "data/models/xlmr-3l-v3"
+        model_checkpoint = "../data/models/xlmr-3l-v3_lc0.1-mix2"
 elif args.num_layers == 6:
     if args.lim_lookahead:
-        model_checkpoint = "data/models/xlmr-6l-v3_look48-OLD"
+        model_checkpoint = "../data/models/xlmr-6l-v3_look48_lc0.1-mix2"
     else:
-        model_checkpoint = "data/models/xlmr-6l-v3"
+        model_checkpoint = "../data/models/xlmr-6l-v3_lc0.1-mix2"
+elif args.num_layers == 9:
+    if args.lim_lookahead:
+        raise NotImplementedError("Not downloaded")
+    else:
+        model_checkpoint = "../data/models/xlmr-9l-v3_lc0.1_mix2"
 elif args.num_layers == 12:
-    if args.corruption_in_pretraining:
-        model_checkpoint = "data/models/xlmr-12l-v3_lc0.25-mix2"
-    elif args.new_tokenizer:
-        model_checkpoint = "data/models/xlmr-12l-v3-NEW"
+    if args.lim_lookahead:
+        model_checkpoint = "../data/models/xlmr-12l-v3_look48_lc0.1"
     else:
-        model_checkpoint = "data/models/xlmr-12l-v3-OLD"
+        model_checkpoint = "../data/models/xlmr-12l-v3_lc0.1-mix2"
+
 else:
     raise ValueError("Invalid number of layers. Valid values are 3, 6, 12.")
 
@@ -104,25 +154,41 @@ print(model_checkpoint)
 tokenizer = AutoTokenizer.from_pretrained(tokenizer_checkpoint)
 assert isinstance(tokenizer, transformers.PreTrainedTokenizerFast)
 
-model = SubwordXLMForTokenClassification.from_pretrained(
-    model_checkpoint,
-    num_labels=1,
-    ignore_mismatched_sizes=True,
-)
+if args.num_layers == 3 and args.without_pretraining:
+    model = SubwordXLMForTokenClassification.from_pretrained(
+        model_checkpoint,
+        num_labels=1,
+        ignore_mismatched_sizes=True,
+        num_hidden_layers=3,
+    )
+else:
+    model = SubwordXLMForTokenClassification.from_pretrained(
+        model_checkpoint,
+        num_labels=1,
+        ignore_mismatched_sizes=True,
+    )
 
-print("Model loaded")
 
+def tokenize_and_get_labels(sentences, lang_code, dataset_name):
 
-def tokenize_and_get_labels(sentences, separator):
+    separator = Constants.SEPARATORS.get(lang_code, " ")
 
     joined_sentence = ""
     sentence_start_positions = []
     current_position = 0
 
     for sentence in sentences:
+        if random.random() < 0.1 and sentence[-1] in punct_chars and dataset_name == "corrupted-social-media":
+            if separator == " ":
+                separator_used = ""
+            else:
+                separator_used = " "
+        else:
+            separator_used = separator
+
         if joined_sentence:
-            joined_sentence += separator
-            current_position += len(separator)
+            joined_sentence += separator_used
+            current_position += len(separator_used)
         start_position = current_position
         joined_sentence += sentence
         current_position += len(sentence)
@@ -153,33 +219,35 @@ def tokenize_and_get_labels(sentences, separator):
     return input_ids, labels
 
 
-def pack_sentences(input_data_dict, block_size, by_dataset_too=False):
+def pack_sentences(input_data_dict, block_size):
 
-    if not by_dataset_too:
-        packed_data = defaultdict(lambda: {"input_ids": [], "attention_mask": [], "labels": []})
-    else:
-        packed_data = defaultdict(lambda: defaultdict(lambda: {"input_ids": [], "attention_mask": [], "labels": []}))
+    packed_data = defaultdict(lambda: defaultdict(lambda: {"input_ids": [], "attention_mask": [], "labels": []}))
 
-    for dataset_name in tqdm(input_data_dict):
-        for lang_code, sentences in input_data_dict[dataset_name].items():
+    for lang_code in tqdm(input_data_dict):
+        for dataset_name, sentences in input_data_dict[lang_code].items():
 
-            separator = Constants.SEPARATORS.get(lang_code, " ")
+            if dataset_name == "corrupted-social-media":
+                p_add_to_block = 0.5
+            else:
+                p_add_to_block = 1.0
 
             token_count, one_block_sentences = 0, []
 
             for sentence in sentences:
-                if not sentence or sentence.isnumeric():
-                    continue
 
-                # TODO change this to tokenize in one go for efficiency
                 num_sentence_tokens = len(tokenizer(sentence, add_special_tokens=False)["input_ids"])
 
-                if token_count + num_sentence_tokens < block_size - 4:
+                if not sentence or sentence.isnumeric() or num_sentence_tokens == 0:
+                    continue
+
+                if token_count + num_sentence_tokens < block_size - 4 and (
+                    random.random() <= p_add_to_block or len(one_block_sentences) == 0
+                ):
                     one_block_sentences.append(sentence)
                     token_count += num_sentence_tokens
                 else:
                     if one_block_sentences:
-                        input_ids, labels = tokenize_and_get_labels(one_block_sentences, separator)
+                        input_ids, labels = tokenize_and_get_labels(one_block_sentences, lang_code, dataset_name)
 
                         num_to_pad = block_size - len(input_ids)
                         attention_mask = [1] * len(input_ids) + [0] * num_to_pad
@@ -192,14 +260,9 @@ def pack_sentences(input_data_dict, block_size, by_dataset_too=False):
                             len(labels),
                         )
 
-                        if not by_dataset_too:
-                            packed_data[lang_code]["input_ids"].append(input_ids)
-                            packed_data[lang_code]["attention_mask"].append(attention_mask)
-                            packed_data[lang_code]["labels"].append(labels)
-                        else:
-                            packed_data[dataset_name][lang_code]["input_ids"].append(input_ids)
-                            packed_data[dataset_name][lang_code]["attention_mask"].append(attention_mask)
-                            packed_data[dataset_name][lang_code]["labels"].append(labels)
+                        packed_data[lang_code][dataset_name]["input_ids"].append(input_ids)
+                        packed_data[lang_code][dataset_name]["attention_mask"].append(attention_mask)
+                        packed_data[lang_code][dataset_name]["labels"].append(labels)
 
                     if num_sentence_tokens > block_size - 4:
                         one_block_sentences = []
@@ -209,7 +272,7 @@ def pack_sentences(input_data_dict, block_size, by_dataset_too=False):
                         token_count = num_sentence_tokens
 
             if one_block_sentences:
-                input_ids, labels = tokenize_and_get_labels(one_block_sentences, separator)
+                input_ids, labels = tokenize_and_get_labels(one_block_sentences, lang_code, dataset_name)
 
                 num_to_pad = block_size - len(input_ids)
                 attention_mask = [1] * len(input_ids) + [0] * num_to_pad
@@ -219,49 +282,31 @@ def pack_sentences(input_data_dict, block_size, by_dataset_too=False):
                 assert len(input_ids) == block_size, len(input_ids)
                 assert len(input_ids) == len(labels), (len(input_ids), len(labels))
 
-                if not by_dataset_too:
-                    packed_data[lang_code]["input_ids"].append(input_ids)
-                    packed_data[lang_code]["attention_mask"].append(attention_mask)
-                    packed_data[lang_code]["labels"].append(labels)
-                else:
-                    packed_data[dataset_name][lang_code]["input_ids"].append(input_ids)
-                    packed_data[dataset_name][lang_code]["attention_mask"].append(attention_mask)
-                    packed_data[dataset_name][lang_code]["labels"].append(labels)
+                packed_data[lang_code][dataset_name]["input_ids"].append(input_ids)
+                packed_data[lang_code][dataset_name]["attention_mask"].append(attention_mask)
+                packed_data[lang_code][dataset_name]["labels"].append(labels)
 
-            if not by_dataset_too:
-                assert len(packed_data[lang_code]["input_ids"]) == len(packed_data[lang_code]["labels"])
-            else:
-                assert len(packed_data[dataset_name][lang_code]["input_ids"]) == len(
-                    packed_data[dataset_name][lang_code]["labels"]
-                )
+            assert len(packed_data[lang_code][dataset_name]["input_ids"]) == len(
+                packed_data[lang_code][dataset_name]["labels"]
+            )
 
     return packed_data
 
 
 packed_train_data = pack_sentences(train_sentences, block_size)
+packed_test_data = pack_sentences(test_sentences, block_size)
+test_dataset = {lang_code: defaultdict(dict) for lang_code in packed_test_data}
 
-packed_test_data = pack_sentences(test_sentences, block_size, by_dataset_too=True)
-
-test_dataset = {dataset_name: defaultdict(dict) for dataset_name in packed_test_data}
-
-for dataset_name in packed_test_data:
-    for lang_code in packed_test_data[dataset_name]:
-        test_dataset[dataset_name][lang_code] = Dataset.from_dict(packed_test_data[dataset_name][lang_code])
-
-if args.lim_lookahead:
-    lookahead = 48
-else:
-    lookahead = 512
+for lang_code in packed_test_data:
+    for dataset_name in packed_test_data[lang_code]:
+        test_dataset[lang_code][dataset_name] = Dataset.from_dict(packed_test_data[lang_code][dataset_name])
 
 experiment_name = model_checkpoint.split("/")[-1]
 
-experiment_name += f"-FT-{args.num_layers}L-{args.block_size}BS-{lookahead}LA"
+experiment_name += str(args.num_layers) + "L"
 
-if args.upsampling_in_pretraining:
-    experiment_name += "-upsample_nW4_in_WtP"
-
-if args.upsample_non_whitespace:
-    experiment_name += "-upsample_nW4_in_FT"
+if args.no_sm_corruption:
+    experiment_name += "-no-corruption"
 
 
 def compute_prf(true_values, predicted_values):
@@ -293,39 +338,16 @@ def compute_metrics(p):
     predictions = predictions[labels != -100]
     labels = labels[labels != -100]
 
-    thresholds = np.concatenate(
-        [
-            np.arange(0.0000001, 0.000001, 0.0000001),
-            np.arange(0.000001, 0.00001, 0.000001),
-            np.arange(0.00001, 0.0001, 0.00001),
-            np.arange(0.0001, 0.001, 0.0001),
-            np.arange(0.001, 0.01, 0.001),
-            np.arange(0.01, 0.1, 0.01),
-            np.arange(0.1, 1, 0.1),
-        ]
-    )
+    threshold = 0.25
 
-    precision_best = 0
-    recall_best = 0
-    f1_best = 0
-    threshold_best = 0
+    preds = (predictions > threshold).astype(int)
 
-    for threshold in thresholds[::-1]:
-        preds = (predictions > threshold).astype(int)
-
-        precision, recall, f1 = compute_prf(labels, preds)
-
-        if f1 > f1_best:
-            precision_best = precision
-            recall_best = recall
-            f1_best = f1
-            threshold_best = threshold
+    precision, recall, f1 = compute_prf(labels, preds)
 
     output_dict = {
-        "precision": precision_best,
-        "recall": recall_best,
-        "f1": f1_best,
-        "threshold": threshold_best,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
     }
 
     return output_dict
@@ -341,11 +363,9 @@ class MultiDatasetEvalCallback(TrainerCallback):
     def on_step_end(self, args, state, control, **kwargs):
         if state.global_step % args.eval_steps == 0:
 
-            for dataset_name in self.eval_datasets:
-                for lang_code, eval_dataset in self.eval_datasets[dataset_name].items():
-
+            for lang_code in self.eval_datasets:
+                for dataset_name, eval_dataset in self.eval_datasets[lang_code].items():
                     metrics = trainer.evaluate(eval_dataset)
-
                     for metric, result in metrics.items():
                         wandb.log(
                             {
@@ -357,29 +377,21 @@ class MultiDatasetEvalCallback(TrainerCallback):
 
 multi_dataset_eval_callback = MultiDatasetEvalCallback(test_dataset)
 
-if not args.upsample_non_whitespace:
+train_datasets = []
 
-    train_datasets = [Dataset.from_dict(data) for lang_code, data in packed_train_data.items()]
-else:
-    train_datasets = []
-
-    for lang_code, data in packed_train_data.items():
-        if Constants.SEPARATORS.get(lang_code, " ") == "":
-            train_datasets.extend([Dataset.from_dict(data)] * 20)
-        else:
-            train_datasets.append(Dataset.from_dict(data))
+for lang_code in packed_train_data:
+    for dataset_name in packed_train_data[lang_code]:
+        train_datasets.append(Dataset.from_dict(packed_train_data[lang_code][dataset_name]))
 
 random.shuffle(train_datasets)
 
-
 train_datasets = ConcatDataset(train_datasets)
 
-
-run = wandb.init(project="WtP-FT", entity="igorsterner")
+run = wandb.init(project="SaT-SM", entity="igorsterner")
 wandb.run.name = experiment_name
 
 args = TrainingArguments(
-    output_dir=Path("data/models") / experiment_name,
+    output_dir=Path("../data/models") / experiment_name,
     overwrite_output_dir=True,
     evaluation_strategy="steps",
     eval_steps=250,
@@ -401,7 +413,6 @@ args = TrainingArguments(
 class RoundRobinSampler:
 
     def __init__(self, samplers: Sequence[Iterable], reinit: bool = False):
-
         self.samplers = samplers
         self.reinit = reinit
 
@@ -418,7 +429,6 @@ class RoundRobinSampler:
                 if not self.reinit:
                     break
 
-                # re-initialize the iterator
                 it = iter(self.samplers[i])
                 iterators[i] = it
                 yield next(it)
@@ -491,7 +501,7 @@ class CustomTrainer(Trainer):
             batch_sampler=DistributedRoundRobinBatchSampler(
                 lengths=sizes,
                 batch_size=self.args.train_batch_size,
-                drop_last=self.args.dataloader_drop_last,
+                drop_last=False,
                 rank=self.args.process_index,
                 num_replicas=self.args.world_size,
                 seed=self.args.seed,
@@ -507,7 +517,7 @@ class CustomTrainer(Trainer):
 trainer = CustomTrainer(
     model=model,
     args=args,
-    train_dataset=train_datasets,  # Now it's a concatenated dataset
+    train_dataset=train_datasets,
     eval_dataset=None,
     compute_metrics=compute_metrics,
     tokenizer=tokenizer,

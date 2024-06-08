@@ -20,7 +20,6 @@ from utils.utils import Corpus
 from wtpsplit.evaluation import preprocess_sentence
 from wtpsplit.utils import Constants
 
-
 UD_TREEBANK_PATH = "../data/ud-treebanks-v2.13"  # source: https://universaldependencies.org/#download
 
 ERSATZ_DATA_PATH = "../data/ersatz-test-suite/segmented"  # source: https://github.com/rewicks/ersatz-test-suite
@@ -80,7 +79,7 @@ ERSATZ_TRAIN_DATASETS = {
 punct_chars = set(Constants.PUNCTUATION_CHARS)
 
 
-def corrupt(sentences, lang):
+def corrupt_asr(sentences, lang):
 
     if sentences is None:
         return None
@@ -116,9 +115,33 @@ def corrupt(sentences, lang):
     return corrupted_sentences
 
 
+def corrupt_social_media(sentences, lang):
+
+    if sentences is None:
+        return None
+
+    corrupted_sentences = []
+    for sentence in sentences:
+        if random.random() < 0.5:
+            sentence = "".join([char for char in sentence if char not in punct_chars])
+        if random.random() < 0.5:
+            sentence = sentence.lower()
+
+        for punct in punct_chars:
+            count = 0
+            while random.random() < 0.5:
+                count += 1
+            sentence = sentence.replace(punct, punct * count)
+
+        sentence = preprocess_sentence(sentence)
+        corrupted_sentences.append(sentence)
+
+    return corrupted_sentences
+
+
 @dataclass
 class Args:
-    output_file: str = "../data/preprocessed_training_data/all_data_02_05.pth"
+    output_file: str = "../data/preprocessed_training_data/all_data_11_05.pth"
     include_train_data: bool = True
     cache_dir: str = "../data/cache/"
 
@@ -128,7 +151,7 @@ if __name__ == "__main__":
 
     eval_data = {lang_code: {"sentence": {}, "compound": {}} for lang_code in Constants.LANGINFO.index}
 
-    # # Ersatz data
+    # Ersatz data
     for lang_code in tqdm(Constants.LANGINFO.index):
         if lang_code in ERSATZ_TEST_DATASETS:
             eval_data[lang_code]["sentence"]["ersatz"] = {
@@ -154,7 +177,45 @@ if __name__ == "__main__":
                 ],
             }
 
-    # UD + OPUS100 sentences + TED
+            eval_data[lang_code]["sentence"]["ersatz-corrupted-asr"] = {
+                "meta": {
+                    "train_data": (
+                        corrupt_asr(
+                            (
+                                eval_data[lang_code]["sentence"]["ersatz"]["meta"]["train_data"][:10000]
+                                if eval_data[lang_code]["sentence"]["ersatz"]["meta"]["train_data"] is not None
+                                else None
+                            ),
+                            lang_code,
+                        )
+                    )
+                },
+                "data": corrupt_asr(
+                    eval_data[lang_code]["sentence"]["ersatz"]["data"][:10000],
+                    lang_code,
+                ),
+            }
+
+            eval_data[lang_code]["sentence"]["ersatz-corrupted-social-media"] = {
+                "meta": {
+                    "train_data": (
+                        corrupt_social_media(
+                            (
+                                eval_data[lang_code]["sentence"]["ersatz"]["meta"]["train_data"][:10000]
+                                if eval_data[lang_code]["sentence"]["ersatz"]["meta"]["train_data"] is not None
+                                else None
+                            ),
+                            lang_code,
+                        )
+                    )
+                },
+                "data": corrupt_social_media(
+                    eval_data[lang_code]["sentence"]["ersatz"]["data"][:10000],
+                    lang_code,
+                ),
+            }
+
+    # UD + OPUS100 sentences + TED + NLLB
     for lang_code in tqdm(Constants.LANGINFO.index):
         opus_dset_name = Constants.LANGINFO.loc[lang_code, "opus100"]
 
@@ -187,23 +248,39 @@ if __name__ == "__main__":
                 ]
                 opus100_train_sentences = None
 
+            opus100_train_sentences = opus100_train_sentences[:10000] if opus100_train_sentences is not None else None
+
             eval_data[lang_code]["sentence"]["opus100"] = {
                 "meta": {"train_data": (opus100_train_sentences if args.include_train_data else None)},
                 "data": opus100_sentences,
             }
 
-            corrupted_opus100_train_sentences = (
-                opus100_train_sentences[:10000] if opus100_train_sentences is not None else None
-            )
-            corrupted_opus100_sentences = opus100_sentences[:10000]
+            eval_data[lang_code]["sentence"]["opus100-corrupted-asr"] = {
+                "meta": {
+                    "train_data": (
+                        corrupt_asr(
+                            (opus100_train_sentences),
+                            lang_code,
+                        )
+                        if args.include_train_data
+                        else None
+                    )
+                },
+                "data": corrupt_asr(opus100_sentences[:10000], lang_code),
+            }
 
-            corrupted_opus100_sentences = corrupt(corrupted_opus100_sentences, lang_code)
-
-            corrupted_opus100_train_sentences = corrupt(opus100_train_sentences, lang_code)
-
-            eval_data[lang_code]["sentence"]["opus100-corrupted"] = {
-                "meta": {"train_data": (corrupted_opus100_train_sentences if args.include_train_data else None)},
-                "data": corrupted_opus100_sentences,
+            eval_data[lang_code]["sentence"]["opus100-corrupted-social-media"] = {
+                "meta": {
+                    "train_data": (
+                        corrupt_social_media(
+                            (opus100_train_sentences),
+                            lang_code,
+                        )
+                        if args.include_train_data
+                        else None
+                    )
+                },
+                "data": corrupt_social_media(opus100_sentences[:10000], lang_code),
             }
 
         if Constants.LANGINFO.loc[lang_code, "ud"] not in (np.nan, None):
@@ -231,19 +308,33 @@ if __name__ == "__main__":
                         )[0]
                     ).read()
                 )
-                ud_train_sentences = [preprocess_sentence(sentence.metadata["text"]) for sentence in ud_train_data]
+                ud_train_sentences = [preprocess_sentence(sentence.metadata["text"]) for sentence in ud_train_data][
+                    :10000
+                ]
             except IndexError:
                 ud_train_sentences = None
 
             ud_sentences = [preprocess_sentence(sentence.metadata["text"]) for sentence in ud_data]
+
             eval_data[lang_code]["sentence"]["ud"] = {
                 "meta": {"train_data": (ud_train_sentences if args.include_train_data else None)},
                 "data": ud_sentences,
             }
 
-            eval_data[lang_code]["sentence"]["ud-corrupted"] = {
-                "meta": {"train_data": (corrupt(ud_train_sentences, lang_code) if args.include_train_data else None)},
-                "data": corrupt(ud_sentences, lang_code),
+            eval_data[lang_code]["sentence"]["ud-corrupted-asr"] = {
+                "meta": {
+                    "train_data": (corrupt_asr(ud_train_sentences, lang_code) if args.include_train_data else None)
+                },
+                "data": corrupt_asr(ud_sentences, lang_code),
+            }
+
+            eval_data[lang_code]["sentence"]["ud-corrupted-social-media"] = {
+                "meta": {
+                    "train_data": (
+                        corrupt_social_media(ud_train_sentences, lang_code) if args.include_train_data else None
+                    )
+                },
+                "data": corrupt_social_media(ud_sentences, lang_code),
             }
 
         # TED 2020
@@ -258,17 +349,62 @@ if __name__ == "__main__":
 
             sentences = [preprocess_sentence(sentence) for sentence in sentences]
 
-            corrupted_sentences = corrupt(sentences, lang_code)
+            train_sentences = sentences[: len(sentences) // 2]
+            test_sentences = sentences[len(sentences) // 2 :]
+
+            eval_data[lang_code]["sentence"]["ted2020-corrupted-asr"] = {
+                "meta": {"train_data": (corrupt_asr(train_sentences, lang_code) if args.include_train_data else None)},
+                "data": corrupt_asr(test_sentences, lang_code),
+            }
+
+            eval_data[lang_code]["sentence"]["ted2020-corrupted-social-media"] = {
+                "meta": {
+                    "train_data": (
+                        corrupt_social_media(train_sentences, lang_code) if args.include_train_data else None
+                    )
+                },
+                "data": corrupt_social_media(test_sentences, lang_code),
+            }
 
         else:
+
             print(f"Failed to download TED2020 data for {lang_code}")
 
-        train_sentences = corrupted_sentences[: len(sentences) // 2]
-        test_sentences = corrupted_sentences[len(sentences) // 2 :]
+    for lang_code in ["ceb", "jv", "mn", "yo"]:
+        url = f"https://object.pouta.csc.fi/OPUS-NLLB/v1/mono/{lang_code}.txt.gz"
+        res = requests.get(url)
 
-        eval_data[lang_code]["sentence"]["ted2020-corrupted"] = {
+        if res.status_code == 200:
+            with gzip.open(BytesIO(res.content), "rt", encoding="utf-8") as f:
+                sentences = f.read().splitlines()
+
+            random.shuffle(sentences)  # because they come alphabetically sorted
+
+            sentences = sentences[:20000]
+
+            sentences = [preprocess_sentence(sentence) for sentence in sentences]
+
+        else:
+            raise Exception
+
+        train_sentences = sentences[: len(sentences) // 2]
+        test_sentences = sentences[len(sentences) // 2 :]
+
+        eval_data[lang_code]["sentence"]["nllb"] = {
             "meta": {"train_data": (train_sentences if args.include_train_data else None)},
             "data": test_sentences,
+        }
+
+        eval_data[lang_code]["sentence"]["nllb-corrupted-asr"] = {
+            "meta": {"train_data": (corrupt_asr(train_sentences, lang_code) if args.include_train_data else None)},
+            "data": corrupt_asr(test_sentences, lang_code),
+        }
+
+        eval_data[lang_code]["sentence"]["nllb-corrupted-social-media"] = {
+            "meta": {
+                "train_data": (corrupt_social_media(train_sentences, lang_code) if args.include_train_data else None)
+            },
+            "data": corrupt_social_media(test_sentences, lang_code),
         }
 
     # UD Code-Switching Corpora
@@ -310,9 +446,14 @@ if __name__ == "__main__":
         "data": ud_test_sentences,
     }
 
-    eval_data["tr-de"]["sentence"]["code-switching-corrupted"] = {
-        "meta": {"train_data": corrupt(ud_train_sentences, "en")},
-        "data": corrupt(ud_test_sentences, "en"),
+    eval_data["tr-de"]["sentence"]["code-switching-corrupted-asr"] = {
+        "meta": {"train_data": corrupt_asr(ud_train_sentences, "en")},
+        "data": corrupt_asr(ud_test_sentences, "en"),
+    }
+
+    eval_data["tr-de"]["sentence"]["code-switching-corrupted-social-media"] = {
+        "meta": {"train_data": corrupt_social_media(ud_train_sentences, "en")},
+        "data": corrupt_social_media(ud_test_sentences, "en"),
     }
 
     # UD_Spanish_English-Miami
@@ -341,14 +482,17 @@ if __name__ == "__main__":
         "data": ud_test_sentences,
     }
 
-    eval_data["es-en"]["sentence"]["code-switching-corrupted"] = {
-        "meta": {"train_data": corrupt(ud_train_sentences, "es")},
-        "data": corrupt(ud_test_sentences, "es"),
+    eval_data["es-en"]["sentence"]["code-switching-corrupted-asr"] = {
+        "meta": {"train_data": corrupt_asr(ud_train_sentences, "es")},
+        "data": corrupt_asr(ud_test_sentences, "es"),
+    }
+
+    eval_data["es-en"]["sentence"]["code-switching-corrupted-social-media"] = {
+        "meta": {"train_data": corrupt_social_media(ud_train_sentences, "es")},
+        "data": corrupt_social_media(ud_test_sentences, "es"),
     }
 
     # Vietnamese--English
-
-    # no headers
 
     canvec_corpus = pd.read_excel("../data/vietnamese-english/CanVEC_CSW.xlsx", header=None)
     # sentences are the first columnn
@@ -367,9 +511,14 @@ if __name__ == "__main__":
         "data": test_sentences,
     }
 
-    eval_data["vi-en"]["sentence"]["code-switching-corrupted"] = {
-        "meta": {"train_data": corrupt(train_sentences, "vi")},
-        "data": corrupt(test_sentences, "vi"),
+    eval_data["vi-en"]["sentence"]["code-switching-corrupted-asr"] = {
+        "meta": {"train_data": corrupt_asr(train_sentences, "vi")},
+        "data": corrupt_asr(test_sentences, "vi"),
+    }
+
+    eval_data["vi-en"]["sentence"]["code-switching-corrupted-social-media"] = {
+        "meta": {"train_data": corrupt_social_media(train_sentences, "vi")},
+        "data": corrupt_social_media(test_sentences, "vi"),
     }
 
     # Denglisch
@@ -425,22 +574,16 @@ if __name__ == "__main__":
         "data": denglisch_test_sentences,
     }
 
-    eval_data["en-de"]["sentence"]["code-switching-corrupted"] = {
-        "meta": {"train_data": corrupt(denglisch_train_sentences, "de")},
-        "data": corrupt(denglisch_test_sentences, "de"),
+    eval_data["en-de"]["sentence"]["code-switching-corrupted-asr"] = {
+        "meta": {"train_data": corrupt_asr(denglisch_train_sentences, "de")},
+        "data": corrupt_asr(denglisch_test_sentences, "de"),
     }
 
-    # keep only if a 1 or 2 in labels of any sentence in a post
+    eval_data["en-de"]["sentence"]["code-switching-corrupted-social-media"] = {
+        "meta": {"train_data": corrupt_social_media(denglisch_train_sentences, "de")},
+        "data": corrupt_social_media(denglisch_test_sentences, "de"),
+    }
 
-    denglisch_test_posts = [
-        post for post in denglisch_test_posts if any(("1" in labels and "2" in labels) for sentence, labels in post)
-    ]
-
-    denglisch_train_posts = [
-        post for post in denglisch_train_posts if any(("1" in labels and "2" in labels) for sentence, labels in post)
-    ]
-
-    # remove labels
     denglisch_test_posts = [[sentence for sentence, labels in post] for post in denglisch_test_posts]
     denglisch_train_posts = [[sentence for sentence, labels in post] for post in denglisch_train_posts]
 
@@ -449,9 +592,14 @@ if __name__ == "__main__":
         "data": denglisch_test_posts,
     }
 
-    eval_data["en-de"]["sentence"]["short-sequences-corrupted"] = {
-        "meta": {"train_data": [corrupt(s, "de") for s in denglisch_train_posts]},
-        "data": [corrupt(s, "de") for s in denglisch_test_posts],
+    eval_data["en-de"]["sentence"]["short-sequences-corrupted-asr"] = {
+        "meta": {"train_data": [corrupt_asr(s, "de") for s in denglisch_train_posts]},
+        "data": [corrupt_asr(s, "de") for s in denglisch_test_posts],
+    }
+
+    eval_data["en-de"]["sentence"]["short-sequences-corrupted-social-media"] = {
+        "meta": {"train_data": [corrupt_social_media(s, "de") for s in denglisch_train_posts]},
+        "data": [corrupt_social_media(s, "de") for s in denglisch_test_posts],
     }
 
     # Short sequences
@@ -486,7 +634,6 @@ if __name__ == "__main__":
     if tweet_sentences:
         serbian_test_tweets.append(tweet_sentences)
 
-    # keep only if more than one sentence in a tweet
     serbian_train_tweets = [tweet for tweet in serbian_train_tweets if len(tweet) > 1]
     serbian_test_tweets = [tweet for tweet in serbian_test_tweets if len(tweet) > 1]
 
@@ -495,9 +642,14 @@ if __name__ == "__main__":
         "data": serbian_test_tweets,
     }
 
-    eval_data["sr"]["sentence"]["short-sequences-corrupted"] = {
-        "meta": {"train_data": [corrupt(s, "sr") for s in serbian_train_tweets]},
-        "data": [corrupt(s, "sr") for s in serbian_test_tweets],
+    eval_data["sr"]["sentence"]["short-sequences-corrupted-asr"] = {
+        "meta": {"train_data": [corrupt_asr(s, "sr") for s in serbian_train_tweets]},
+        "data": [corrupt_asr(s, "sr") for s in serbian_test_tweets],
+    }
+
+    eval_data["sr"]["sentence"]["short-sequences-corrupted-social-media"] = {
+        "meta": {"train_data": [corrupt_social_media(s, "sr") for s in serbian_train_tweets]},
+        "data": [corrupt_social_media(s, "sr") for s in serbian_test_tweets],
     }
 
     # slovenian
@@ -531,9 +683,14 @@ if __name__ == "__main__":
         "data": slovenian_test_tweets,
     }
 
-    eval_data["sl"]["sentence"]["short-sequences-corrupted"] = {
-        "meta": {"train_data": [corrupt(s, "sl") for s in slovenian_train_tweeets]},
-        "data": [corrupt(s, "sl") for s in slovenian_test_tweets],
+    eval_data["sl"]["sentence"]["short-sequences-corrupted-asr"] = {
+        "meta": {"train_data": [corrupt_asr(s, "sl") for s in slovenian_train_tweeets]},
+        "data": [corrupt_asr(s, "sl") for s in slovenian_test_tweets],
+    }
+
+    eval_data["sl"]["sentence"]["short-sequences-corrupted-social-media"] = {
+        "meta": {"train_data": [corrupt_social_media(s, "sl") for s in slovenian_train_tweeets]},
+        "data": [corrupt_social_media(s, "sl") for s in slovenian_test_tweets],
     }
 
     # estonian
@@ -569,12 +726,207 @@ if __name__ == "__main__":
         "data": estonian_test_paragraphs,
     }
 
-    eval_data["et"]["sentence"]["short-sequences-corrupted"] = {
-        "meta": {"train_data": [corrupt(s, "et") for s in estonian_train_paragraphs]},
-        "data": [corrupt(s, "et") for s in estonian_test_paragraphs],
+    eval_data["et"]["sentence"]["short-sequences-corrupted-asr"] = {
+        "meta": {"train_data": [corrupt_asr(s, "et") for s in estonian_train_paragraphs]},
+        "data": [corrupt_asr(s, "et") for s in estonian_test_paragraphs],
     }
 
-    with open("../data/preprocessed_training_data/all_data_02_05.json", "w") as f:
-        json.dump(eval_data, f, indent=4, ensure_ascii=False)
+    eval_data["et"]["sentence"]["short-sequences-corrupted-social-media"] = {
+        "meta": {"train_data": [corrupt_social_media(s, "et") for s in estonian_train_paragraphs]},
+        "data": [corrupt_social_media(s, "et") for s in estonian_test_paragraphs],
+    }
 
-    torch.save(eval_data, args.output_file)
+    langs = ["de", "en", "es", "fr", "it", "pt"]
+
+    all_subset_data = {
+        lang: {
+            "laws": {"train": [], "test": []},
+            "judgements": {"train": [], "test": []},
+        }
+        for lang in langs
+    }
+
+    for lang in tqdm(langs, desc="Legal data"):
+        data_dir = f"../data/MultiLegalSBD/data/{lang}/gold/"
+
+        if lang == "pt":
+            all_files = glob.glob(f"{data_dir}/*.jsonl")
+            subsets = [file.split("/")[-1].split(".jsonl")[0] for file in all_files]
+        else:
+            all_files = glob.glob(f"{data_dir}/*_test.jsonl")
+            subsets = [file.split("/")[-1].split("_test.jsonl")[0] for file in all_files]
+
+        for subset in subsets:
+
+            if subset == "Constitution":
+                continue
+
+            if lang == "pt":
+                train_data = [None]
+            else:
+
+                train_data = []
+
+                with open(
+                    f"../data/MultiLegalSBD/data/{lang}/gold/{subset}_train.jsonl",
+                    "r",
+                    encoding="utf-8",
+                ) as f:
+                    for line in f:
+                        train_data.append(json.loads(line))
+
+                train_subset_sentences = []
+                for doc in train_data:
+                    doc_sentences = []
+                    text = doc["text"]
+                    for span in doc["spans"]:
+                        sentence = text[span["start"] : span["end"]]
+                        doc_sentences.append(preprocess_sentence(sentence))
+                    train_subset_sentences.append(doc_sentences)
+
+            test_data = []
+
+            if lang == "pt":
+                test_data_file = f"../data/MultiLegalSBD/data/{lang}/gold/{subset}.jsonl"
+            else:
+                test_data_file = f"../data/MultiLegalSBD/data/{lang}/gold/{subset}_test.jsonl"
+
+            with open(
+                test_data_file,
+                "r",
+                encoding="utf-8",
+            ) as f:
+                for line in f:
+                    test_data.append(json.loads(line))
+
+            test_subset_sentences = []
+            for doc in test_data:
+                doc_sentences = []
+                text = doc["text"]
+                for span in doc["spans"]:
+                    sentence = text[span["start"] : span["end"]]
+                    doc_sentences.append(preprocess_sentence(sentence))
+                test_subset_sentences.append(doc_sentences)
+
+            eval_data[lang]["sentence"][f"legal-{subset}"] = {
+                "meta": {"train_data": train_subset_sentences},
+                "data": test_subset_sentences,
+            }
+
+            eval_data[lang]["sentence"][f"legal-{subset}-corrupted-asr"] = {
+                "meta": {"train_data": [corrupt_asr(s, lang) for s in train_subset_sentences]},
+                "data": [corrupt_asr(s, lang) for s in test_subset_sentences],
+            }
+
+            eval_data[lang]["sentence"][f"legal-{subset}-corrupted-social-media"] = {
+                "meta": {"train_data": [corrupt_social_media(s, lang) for s in train_subset_sentences]},
+                "data": [corrupt_social_media(s, lang) for s in test_subset_sentences],
+            }
+
+            subsets2set = {
+                "CD_jug": "judgements",
+                "gesCode": "laws",
+                "CD_multi_legal": "judgements",
+                "CD_wipolex": "judgements",
+                "CivilCode": "laws",
+                "CriminalCode": "laws",
+                "CD_swiss_judgement": "judgements",
+            }
+
+            if lang != "en":
+                set = subsets2set[subset]
+            else:
+                set = "judgements"
+
+            all_subset_data[lang][set]["train"].extend(train_subset_sentences)
+            all_subset_data[lang][set]["test"].extend(test_subset_sentences)
+
+        # constitution
+
+        if lang in ["de", "en"]:
+            continue
+
+        test_data = []
+        test_data_file = f"../data/MultiLegalSBD/data/{lang}/gold/Constitution.jsonl"
+        with open(
+            test_data_file,
+            "r",
+            encoding="utf-8",
+        ) as f:
+            for line in f:
+                test_data.append(json.loads(line))
+
+        test_subset_sentences = []
+        for doc in test_data:
+            doc_sentences = []
+            text = doc["text"]
+            for span in doc["spans"]:
+                sentence = text[span["start"] : span["end"]]
+                doc_sentences.append(preprocess_sentence(sentence))
+            test_subset_sentences.append(doc_sentences)
+
+        eval_data[lang]["sentence"][f"legal-constitution"] = {
+            "meta": {"train_data": None},
+            "data": test_subset_sentences,
+        }
+
+        eval_data[lang]["sentence"][f"legal-constitution-corrupted-asr"] = {
+            "meta": {"train_data": None},
+            "data": [corrupt_asr(s, lang) for s in test_subset_sentences],
+        }
+
+        eval_data[lang]["sentence"][f"legal-constitution-corrupted-social-media"] = {
+            "meta": {"train_data": None},
+            "data": [corrupt_social_media(s, lang) for s in test_subset_sentences],
+        }
+
+        all_subset_data[lang]["laws"]["test"].extend(test_subset_sentences)
+
+    for lang in all_subset_data:
+        for set in ["laws", "judgements"]:
+            eval_data[lang]["sentence"][f"legal-all-{set}"] = {
+                "meta": {"train_data": all_subset_data[lang][set]["train"]},
+                "data": all_subset_data[lang][set]["test"],
+            }
+
+            eval_data[lang]["sentence"][f"legal-all-{set}-corrupted-asr"] = {
+                "meta": {"train_data": [corrupt_asr(s, lang) for s in all_subset_data[lang][set]["train"]]},
+                "data": [corrupt_asr(s, lang) for s in all_subset_data[lang][set]["test"]],
+            }
+
+            eval_data[lang]["sentence"][f"legal-all-{set}-corrupted-social-media"] = {
+                "meta": {"train_data": [corrupt_social_media(s, lang) for s in all_subset_data[lang][set]["train"]]},
+                "data": [corrupt_social_media(s, lang) for s in all_subset_data[lang][set]["test"]],
+            }
+
+    torch.save(eval_data, args.output_file.replace(".pth", "-all.pth"))
+
+    eval_data = {}
+    eval_data["en"] = {}
+    eval_data["en"]["sentence"] = {}
+
+    lyric_data = torch.load("../data/mldbW_verses.pth")
+
+    for lang in lyric_data.keys():
+        for genre in lyric_data[lang]["sentence"].keys():
+            train_data = lyric_data[lang]["sentence"][genre]["meta"]["train_data"]
+            train_data = [[verse for verse in song if verse != ""] for song in train_data]
+            test_data = lyric_data[lang]["sentence"][genre]["data"]
+            test_data = [[verse for verse in song if verse != ""] for song in test_data]
+
+            eval_data[lang]["sentence"]["lyrics-" + genre] = {
+                "meta": {"train_data": train_data},
+                "data": test_data,
+            }
+
+            eval_data[lang]["sentence"]["lyrics-" + genre + "-corrupted-asr"] = {
+                "meta": {"train_data": [corrupt_asr(s, lang) for s in train_data]},
+                "data": [corrupt_asr(s, lang) for s in test_data],
+            }
+
+            eval_data[lang]["sentence"]["lyrics-" + genre + "corrupted-social-media"] = {
+                "meta": {"train_data": [corrupt_social_media(s, lang) for s in train_data]},
+                "data": [corrupt_social_media(s, lang) for s in test_data],
+            }
+
+    torch.save(eval_data, args.output_file.replace(".pth", "-lyrics.pth"))
